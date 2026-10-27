@@ -2,66 +2,29 @@
 # strings-pull-0.6.4, never on main. Builds the Play AAB exactly as
 # release.yml's bundle job does, at wmkb.versionCode 100039 (Play 1000390, a
 # code no real release will reach), and uploads it to the internal track as a
-# DRAFT: Play translates its strings on upload, nothing rolls out. The upload
-# retries every 20 minutes for up to five hours, since Play's translation step
-# can fail for hours ("languages are not supported for translation").
+# DRAFT: Play translates its strings on upload, nothing rolls out.
+# Upload-only retry: takes the AAB run 40519584187 built. That run's two
+# attempts each died after ~18 minutes on "Connection reset by peer", so this
+# one retries 3 minutes after a failure, for up to five and a half hours.
 name: Strings pull 0.6.4
 on:
   push:
     branches: [strings-pull-0.6.4]
 jobs:
-  bundle:
-    runs-on: ubuntu-latest
-    timeout-minutes: 75
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '21'
-      - uses: gradle/actions/setup-gradle@v4
-      - name: Restore keystore
-        env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-        run: echo "$KEYSTORE_BASE64" | base64 -d > release.keystore
-      - name: Build AAB
-        env:
-          GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx8g -Dorg.gradle.daemon=false
-          RELEASE_STORE_FILE: release.keystore
-          RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
-          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
-          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
-          WMKB_ENABLE_PLAY_STORE: 'true'
-          WMKB_ENABLE_GMS: 'true'
-          WMKB_KLIPY_API_KEY: ${{ secrets.WMKB_KLIPY_API_KEY }}
-          WMKB_GIPHY_API_KEY: ${{ secrets.WMKB_GIPHY_API_KEY }}
-          WMKB_BRAVE_API_KEY: ${{ secrets.WMKB_BRAVE_API_KEY }}
-          WMKB_TRANSLATE_API_KEY: ${{ secrets.WMKB_TRANSLATE_API_KEY }}
-          WMKB_UNSPLASH_API_KEY: ${{ secrets.WMKB_UNSPLASH_API_KEY }}
-          WMKB_PEXELS_API_KEY: ${{ secrets.WMKB_PEXELS_API_KEY }}
-          WMKB_DROPBOX_APP_KEY: ${{ secrets.WMKB_DROPBOX_APP_KEY }}
-          WMKB_ONEDRIVE_CLIENT_ID: ${{ secrets.WMKB_ONEDRIVE_CLIENT_ID }}
-          WMKB_SMARTTHINGS_CLIENT_ID: ${{ secrets.WMKB_SMARTTHINGS_CLIENT_ID }}
-          WMKB_SMARTTHINGS_CLIENT_SECRET: ${{ secrets.WMKB_SMARTTHINGS_CLIENT_SECRET }}
-        run: ./gradlew bundleEnRelease --stacktrace
-      - name: Wipe keystore
-        if: always()
-        run: rm -f release.keystore
-      - uses: actions/upload-artifact@v4
-        with:
-          name: strings-pull-bundle
-          path: app/build/outputs/bundle/enRelease/*.aab
-          retention-days: 7
   upload:
-    needs: bundle
     runs-on: ubuntu-latest
-    timeout-minutes: 330
+    timeout-minutes: 340
+    permissions:
+      actions: read
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: strings-pull-bundle
           path: dist
+          run-id: 40519584187
+          github-token: ${{ github.token }}
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: '3.4'
@@ -72,14 +35,17 @@ jobs:
         run: |
           printf '%s' "$PLAY_SERVICE_ACCOUNT_JSON" > play-key.json
           aab=$(ls dist/*.aab | head -n1)
-          for attempt in $(seq 1 15); do
+          ls -l "$aab"
+          for attempt in $(seq 1 40); do
+            echo "attempt $attempt started at $(date -u +%H:%M)"
             if bundle exec fastlane run upload_to_play_store json_key:play-key.json \
               package_name:com.wasimaster.wmkeyboard track:internal release_status:draft \
               "aab:$PWD/$aab" skip_upload_apk:true skip_upload_metadata:true \
-              skip_upload_changelogs:true skip_upload_images:true skip_upload_screenshots:true; then
-              echo "uploaded on attempt $attempt"; exit 0
+              skip_upload_changelogs:true skip_upload_images:true skip_upload_screenshots:true \
+              timeout:3600; then
+              echo "uploaded on attempt $attempt at $(date -u +%H:%M)"; exit 0
             fi
-            echo "upload attempt $attempt failed at $(date -u +%H:%M)"; sleep 1200
+            echo "upload attempt $attempt failed at $(date -u +%H:%M)"; sleep 180
           done
           exit 1
       - name: Wipe key
